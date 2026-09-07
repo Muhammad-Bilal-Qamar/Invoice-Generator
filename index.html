@@ -704,7 +704,7 @@
                 AI Invoice Generator Agent
               </span>
             </div>
-            <span style="font-size: 9.5px; font-family: var(--font-mono); color: var(--text-dim);">Qwen 3.6-27B</span>
+            <span style="font-size: 9.5px; font-family: var(--font-mono); color: var(--text-dim);">GPT-OSS 120B</span>
           </div>
 
           <p style="font-size: 11.5px; color: var(--text-muted); margin-bottom: 10px; line-height: 1.45;">
@@ -969,7 +969,7 @@
         <div id="wizard-step-1" class="wizard-pane">
           <h3 style="font-size: 13.5px; font-weight: 700; margin-bottom: 3px;">1. Connect Groq API Key & Select Currency</h3>
           <p style="font-size: 11.5px; color: var(--text-muted); margin-bottom: 14px;">
-            Configure AI integration (<strong>qwen/qwen3.6-27b</strong>) and billing currency.
+            Configure AI integration (<strong>openai/gpt-oss-120b</strong>) and billing currency.
           </p>
           
           <div class="glass-card" style="padding: 12px; margin-bottom: 10px;">
@@ -1120,7 +1120,7 @@
     <div class="modal-window" style="max-width: 580px;">
       <div style="padding: 14px 18px; border-bottom: 1px solid var(--border-glass); display: flex; justify-content: space-between; align-items: center;">
         <div style="display: flex; align-items: center; gap: 6px;">
-          <span style="font-size: 9.5px; font-family: var(--font-mono); background: #1e293b; padding: 2px 5px; border-radius: 4px;">Qwen 3.6-27B</span>
+          <span style="font-size: 9.5px; font-family: var(--font-mono); background: #1e293b; padding: 2px 5px; border-radius: 4px;">GPT-OSS 120B</span>
           <h3 style="font-size: 13px; font-weight: 700;">Client Delivery Email Drafter</h3>
         </div>
         <button type="button" class="btn btn-secondary" style="padding: 2px 6px; font-size: 10px;" onclick="closeModal('email-drafter-modal')">✕</button>
@@ -1555,18 +1555,19 @@
 
       const curCode = state.userProfile.currencyCode || "USD";
 
-      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${state.userProfile.apiKey.trim()}`
-        },
-        body: JSON.stringify({
-          model: "qwen/qwen3.6-27b",
-          messages: [
-            {
-              role: "system",
-              content: `You are an expert AI Invoice Agent powered by Qwen 3.6 27B. Currency: ${curCode}. Return ONLY valid JSON:
+      async function makeRequest(modelName) {
+        return fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${state.userProfile.apiKey.trim()}`
+          },
+          body: JSON.stringify({
+            model: modelName,
+            messages: [
+              {
+                role: "system",
+                content: `You are an expert AI Invoice Agent. Currency: ${curCode}. Return ONLY valid JSON matching this schema:
 {
   "billedToName": "string",
   "billedToAddress": "string or empty",
@@ -1579,16 +1580,28 @@
   "paymentMethod": "string",
   "note": "string or empty"
 }`
-            },
-            { role: "user", content: prompt }
-          ],
-          temperature: 0.2,
-          max_tokens: 2048
-        })
-      });
+              },
+              { role: "user", content: prompt }
+            ],
+            temperature: 0.2,
+            max_tokens: 2048
+          })
+        });
+      }
+
+      let response = await makeRequest("openai/gpt-oss-120b");
+      
+      // If gpt-oss-120b fails, try fallback
+      if (!response.ok && response.status !== 429) {
+        console.warn("Primary model openai/gpt-oss-120b failed, trying fallback model...");
+        response = await makeRequest("qwen/qwen3.6-27b");
+      }
 
       if (!response.ok) {
         const err = await response.json().catch(() => ({}));
+        if (response.status === 429) {
+          throw new Error("Groq Rate Limit (429): Your API key exceeded request rate limits. Please wait 30 seconds before retrying.");
+        }
         throw new Error(err.error?.message || `Groq API error (${response.status})`);
       }
 
@@ -1596,7 +1609,7 @@
       let content = data.choices?.[0]?.message?.content || "";
       content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
       const match = content.match(/\{[\s\S]*\}/);
-      if (!match) throw new Error("Could not extract structured JSON.");
+      if (!match) throw new Error("Could not extract structured JSON from AI response.");
       return JSON.parse(match[0]);
     }
 
@@ -1846,17 +1859,130 @@
 
     function openEmailModal() {
       openModal('email-drafter-modal');
-      generateClientEmail('professional');
+      const current = document.getElementById('email-output-box').value.trim();
+      if (!current) {
+        generateClientEmail('professional');
+      }
     }
 
     async function generateClientEmail(tone = 'professional') {
       const output = document.getElementById('email-output-box');
-      output.value = `Generating ${tone} email using Qwen 3.6 27B...`;
+      output.value = `Drafting ${tone} email using GPT-OSS 120B...`;
+
+      // Visual highlight on active tone button
+      document.querySelectorAll('.email-tone-btn').forEach(btn => {
+        if (btn.textContent.trim().toLowerCase() === tone.toLowerCase()) {
+          btn.style.background = '#ffffff';
+          btn.style.color = '#000000';
+          btn.style.fontWeight = '700';
+        } else {
+          btn.style.background = 'rgba(30, 41, 59, 0.65)';
+          btn.style.color = 'var(--text-main)';
+          btn.style.fontWeight = '600';
+        }
+      });
+
+      const totalAmount = state.items.reduce((acc, it) => acc + (Number(it.amount) || 0), 0);
+      const remainingAmount = (totalAmount + (Number(state.additionalCosts) || 0)) - (Number(state.advancePaid) || 0);
+
+      function createLocalDraft() {
+        const client = state.billedToName || 'Valued Client';
+        const sender = state.userProfile.fromName || 'Digivating Solutions';
+        const invNo = state.invoiceNumber;
+        const total = formatMoney(totalAmount);
+        const rem = formatMoney(remainingAmount);
+        const method = state.paymentMethod || 'Cash';
+        const note = state.note.trim() ? state.note.trim() : 'Thank you for choosing US!';
+
+        if (tone === 'friendly') {
+          return `Subject: Invoice ${invNo} from ${sender} 😊
+
+Hi ${client},
+
+Hope you're having a great week!
+
+We've prepared your invoice (${invNo}) for the recent deliverables:
+
+• Total Invoice Amount: ${total}
+• Total Balance Due: ${rem}
+• Preferred Payment Method: ${method}
+
+Please find your official invoice attached. ${note}
+
+If you have any questions or need anything adjusted, don't hesitate to reach out.
+
+Warm regards,
+${sender}`;
+        } else if (tone === 'formal') {
+          return `Subject: OFFICIAL INVOICE NOTICE — Ref: ${invNo}
+
+Dear ${client},
+
+Please accept the attached Invoice ${invNo} issued on ${state.invoiceDate} for formal review and settlement.
+
+STATEMENT SUMMARY:
+----------------------------------------
+Invoice Number: ${invNo}
+Invoice Date: ${state.invoiceDate}
+Total Invoice Amount: ${total}
+Balance Outstanding: ${rem}
+Payment Method: ${method}
+----------------------------------------
+
+Instructions / Remarks:
+${note}
+
+Kindly acknowledge receipt and arrange payment in accordance with the stated terms.
+
+Sincerely,
+${sender}`;
+        } else if (tone === 'urgent') {
+          return `Subject: URGENT: Payment Due Notice — Invoice ${invNo}
+
+Dear ${client},
+
+This is an important reminder regarding Invoice ${invNo} for the total outstanding balance of ${rem}.
+
+Summary of Account:
+• Invoice Number: ${invNo}
+• Total Amount: ${total}
+• Balance Due: ${rem}
+• Payment Method: ${method}
+
+Please review the attached invoice and arrange payment at your earliest convenience to keep your account current. ${note}
+
+Thank you for your prompt cooperation.
+
+Best regards,
+${sender}`;
+        } else {
+          return `Subject: Invoice ${invNo} from ${sender}
+
+Dear ${client},
+
+Thank you for your business. Please find attached invoice ${invNo} dated ${state.invoiceDate}.
+
+Invoice Summary:
+• Invoice Number: ${invNo}
+• Total Invoice Amount: ${total}
+• Total Remaining Due: ${rem}
+• Payment Method: ${method}
+
+Note: ${note}
+
+Please review the details and remit payment according to the agreed terms. Feel free to contact us with any questions.
+
+Best regards,
+${sender}`;
+        }
+      }
+
+      if (!state.userProfile.apiKey) {
+        output.value = createLocalDraft();
+        return;
+      }
 
       try {
-        const totalAmount = state.items.reduce((acc, it) => acc + (Number(it.amount) || 0), 0);
-        const remainingAmount = (totalAmount + (Number(state.additionalCosts) || 0)) - (Number(state.advancePaid) || 0);
-
         const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
           method: "POST",
           headers: {
@@ -1864,21 +1990,46 @@
             "Authorization": `Bearer ${state.userProfile.apiKey.trim()}`
           },
           body: JSON.stringify({
-            model: "qwen/qwen3.6-27b",
+            model: "openai/gpt-oss-120b",
             messages: [
-              { role: "system", content: "You draft concise, professional business invoicing emails." },
-              { role: "user", content: `Draft a ${tone} email for invoice ${state.invoiceNumber}. Client: ${state.billedToName}, Total: ${formatMoney(totalAmount)}, Remaining: ${formatMoney(remainingAmount)}, Method: ${state.paymentMethod}. No think tags or backticks.` }
+              { role: "system", content: "You draft concise, professional business invoicing and payment delivery emails." },
+              { role: "user", content: `Draft a ${tone} email to accompany attached invoice ${state.invoiceNumber}.
+Client: ${state.billedToName || 'Valued Client'}
+From: ${state.userProfile.fromName}
+Invoice No: ${state.invoiceNumber}
+Total Amount: ${formatMoney(totalAmount)}
+Advance Paid: ${formatMoney(state.advancePaid)}
+Remaining Due: ${formatMoney(remainingAmount)}
+Payment Method: ${state.paymentMethod}
+Currency: ${state.userProfile.currencyCode || 'USD'}
+Note: ${state.note || 'Thank you for choosing US!'}
+Include subject line and body. No markdown backticks or think tags.` }
             ],
-            temperature: 0.3
+            temperature: 0.3,
+            max_tokens: 600
           })
         });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          console.warn("Groq API returned status:", response.status, errData);
+          
+          const localDraft = createLocalDraft();
+          if (response.status === 429) {
+            output.value = `[Groq 429: Rate Limit Exceeded on API Key — Instant Draft Generated]\n\n${localDraft}`;
+          } else {
+            output.value = `[Groq ${response.status} Notice — Instant Draft Generated]\n\n${localDraft}`;
+          }
+          return;
+        }
 
         const res = await response.json();
         let text = res.choices?.[0]?.message?.content || "";
         text = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-        output.value = text;
+        output.value = text || createLocalDraft();
       } catch (err) {
-        output.value = "Failed to draft email: " + err.message;
+        console.warn("API request failed, using instant local draft:", err);
+        output.value = createLocalDraft();
       }
     }
 
